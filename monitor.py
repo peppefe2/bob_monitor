@@ -3,10 +3,11 @@
 e manda una notifica ntfy. Controlla solo in una fascia del giorno, considera solo
 certi orari del tavolo e ignora i posti rilasciati a mezzanotte."""
 
+import argparse
 import json
 import os
 import re
-import sys
+import time
 import urllib.request
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -17,7 +18,7 @@ BOOKING_URL = "https://www.bobalchimiaspicchi.com/prenota2.php"
 TZ = ZoneInfo("Europe/Rome")
 WINDOW_DAYS = 5                         # prenotabile da oggi a oggi+5
 RELEASE_GRACE = timedelta(minutes=45)   # margine dopo la mezzanotte prima di considerare "rilasciata" la nuova data
-ERROR_ALERT_AFTER = 12                  # errori API consecutivi prima di avvisare (~1 ora)
+ERROR_ALERT_AFTER = 15                  # errori API consecutivi prima di avvisare (~30 min a un controllo ogni 2)
 STATE_FILE = Path(__file__).with_name("state.json")
 
 PARTY_SIZES = [int(x) for x in os.environ.get("PARTY_SIZES", "2,3,4,5").split(",")]
@@ -83,18 +84,18 @@ def save(state):
     STATE_FILE.write_text(json.dumps(state, indent=1, ensure_ascii=False) + "\n")
 
 
-def main():
-    now = datetime.now(TZ)
-    state = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
+def log(msg):
+    print(f"[{datetime.now(TZ):%d/%m %H:%M}] {msg}", flush=True)
 
-    if os.environ.get("NTFY_TEST") == "true":
-        notify("Monitor Bob attivo", "Le notifiche arrivano correttamente.", priority=3, tags=("white_check_mark",))
+
+def check(state):
+    """Un controllo: restituisce il nuovo stato."""
+    now = datetime.now(TZ)
 
     # Fuori fascia non si controlla né si tocca lo stato: il primo controllo delle 8:00
-    # confronta con quello delle 23:50 della sera prima.
+    # confronta con l'ultimo della sera prima.
     if not ACTIVE_FROM <= f"{now:%H:%M}" <= ACTIVE_TO:
-        print(f"Fuori fascia ({now:%H:%M}), nessun controllo.")
-        return
+        return state
 
     today = now.date()
     try:
@@ -103,13 +104,12 @@ def main():
             for slot in fetch(ps, today, today + timedelta(days=WINDOW_DAYS + 1)):
                 current.setdefault(slot, set()).add(ps)
     except Exception as e:
-        state["errors"] = state.get("errors", 0) + 1
-        print(f"Errore API ({state['errors']} di fila): {e}", file=sys.stderr)
+        state = {**state, "errors": state.get("errors", 0) + 1}
+        log(f"Errore API ({state['errors']} di fila): {e}")
         if state["errors"] == ERROR_ALERT_AFTER:
             notify("Monitor Bob in errore", f"L'API non risponde da {state['errors']} controlli: {e}",
                    priority=3, tags=("warning",))
-        save(state)
-        return
+        return state
 
     # Ultima data che era già prenotabile al controllo precedente: gli slot nuovi oltre questa data
     # sono il rilascio di mezzanotte e diventano solo la base di confronto, senza notifica.
@@ -126,15 +126,37 @@ def main():
         lines = [fmt(slot, sizes) for slot, sizes in sorted(freed)]
         title = "Si è liberato un tavolo" if len(lines) == 1 else f"Si sono liberati {len(lines)} tavoli"
         notify(title, "\n".join(lines))
-        print(title, *lines, sep="\n")
+        log(title + "\n" + "\n".join(lines))
     else:
-        print(f"Nessun tavolo liberato ({len(current)} slot disponibili).")
+        log(f"Nessun tavolo liberato ({len(current)} slot disponibili nella fascia oraria).")
 
-    save({
+    return {
         "released_until": ((now - RELEASE_GRACE).date() + timedelta(days=WINDOW_DAYS)).isoformat(),
         "errors": 0,
         "slots": {k: sorted(v) for k, v in sorted(current.items())},
-    })
+    }
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--duration", type=float, default=0, help="minuti di esecuzione (0 = un solo controllo)")
+    ap.add_argument("--every", type=float, default=2, help="minuti tra un controllo e l'altro")
+    args = ap.parse_args()
+
+    if os.environ.get("NTFY_TEST") == "true":
+        notify("Monitor Bob attivo", "Le notifiche arrivano correttamente.", priority=3, tags=("white_check_mark",))
+
+    state = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
+    end = time.monotonic() + args.duration * 60
+    log(f"Inizio: tavoli {SLOT_FROM}-{SLOT_TO} per {PARTY_SIZES} persone, "
+        f"controllo ogni {args.every:g} min tra le {ACTIVE_FROM} e le {ACTIVE_TO}")
+    while True:
+        state = check(state)
+        save(state)
+        if time.monotonic() + args.every * 60 > end:
+            break
+        time.sleep(args.every * 60)
+    log("Fine del run.")
 
 
 if __name__ == "__main__":
