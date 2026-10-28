@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tiene d'occhio i tavoli che si liberano da Bob Alchimia a Spicchi (widget ResDiary)
-e manda una notifica ntfy. I posti rilasciati a mezzanotte vengono ignorati."""
+e manda una notifica ntfy. Controlla solo in una fascia del giorno, considera solo
+certi orari del tavolo e ignora i posti rilasciati a mezzanotte."""
 
 import json
 import os
@@ -20,6 +21,8 @@ ERROR_ALERT_AFTER = 12                  # errori API consecutivi prima di avvisa
 STATE_FILE = Path(__file__).with_name("state.json")
 
 PARTY_SIZES = [int(x) for x in os.environ.get("PARTY_SIZES", "2,3,4,5").split(",")]
+SLOT_FROM, SLOT_TO = os.environ.get("SLOT_FROM", "20:30"), os.environ.get("SLOT_TO", "22:15")        # orario del tavolo
+ACTIVE_FROM, ACTIVE_TO = os.environ.get("ACTIVE_FROM", "08:00"), os.environ.get("ACTIVE_TO", "23:50")  # fascia di controllo
 NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
 NTFY_TOPIC = os.environ["NTFY_TOPIC"]
 
@@ -52,6 +55,8 @@ def fetch(party_size, start, end):
     for d in data["AvailableDates"]:
         areas = {a["Id"]: area_name(a["Name"]) for a in d.get("Areas", [])}
         for t in d["AvailableTimes"]:
+            if not SLOT_FROM <= t["TimeSlot"][:5] <= SLOT_TO:
+                continue
             for area_id in t.get("AvailableAreaIds") or [None]:
                 slots.add(f'{d["Date"][:10]}|{t["TimeSlot"][:5]}|{areas.get(area_id, "?")}')
     return slots
@@ -84,6 +89,12 @@ def main():
 
     if os.environ.get("NTFY_TEST") == "true":
         notify("Monitor Bob attivo", "Le notifiche arrivano correttamente.", priority=3, tags=("white_check_mark",))
+
+    # Fuori fascia non si controlla né si tocca lo stato: il primo controllo delle 8:00
+    # confronta con quello delle 23:50 della sera prima.
+    if not ACTIVE_FROM <= f"{now:%H:%M}" <= ACTIVE_TO:
+        print(f"Fuori fascia ({now:%H:%M}), nessun controllo.")
+        return
 
     today = now.date()
     try:
