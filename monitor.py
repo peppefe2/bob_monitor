@@ -26,6 +26,7 @@ SLOT_FROM, SLOT_TO = os.environ.get("SLOT_FROM", "20:30"), os.environ.get("SLOT_
 ACTIVE_FROM, ACTIVE_TO = os.environ.get("ACTIVE_FROM", "08:00"), os.environ.get("ACTIVE_TO", "23:50")  # fascia di controllo
 NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
 NTFY_TOPIC = os.environ["NTFY_TOPIC"]
+HC_PING_URL = os.environ.get("HC_PING_URL", "").strip()   # opzionale: URL di ping di Healthchecks.io
 
 GIORNI = ["lun", "mar", "mer", "gio", "ven", "sab", "dom"]
 
@@ -37,7 +38,7 @@ def area_name(name):
 
 def fetch(party_size, start, end):
     """Slot 'AAAA-MM-GG|HH:MM|AREA' nella fascia oraria per quel numero di persone,
-    più tutti gli orari liberi 'AAAA-MM-GG|HH:MM' a qualsiasi ora (per il battito settimanale)."""
+    più tutti gli orari liberi 'AAAA-MM-GG|HH:MM' a qualsiasi ora (per il ping a Healthchecks)."""
     body = json.dumps({
         "DateFrom": f"{start.isoformat()}T00:00:00",
         "DateTo": f"{end.isoformat()}T00:00:00",
@@ -134,21 +135,18 @@ def check(state):
     else:
         log(f"Nessun tavolo liberato ({len(current)} slot disponibili nella fascia oraria).")
 
-    # Battito settimanale: al primo controllo riuscito della settimana (di norma lunedì alle 8:00).
-    # Se un lunedì non arriva, qualcosa nella catena si è rotto.
-    week = "%d-W%02d" % now.isocalendar()[:2]
-    if state.get("heartbeat_week") != week:
-        notify("Monitor Bob attivo",
-               f"Controllo settimanale: {len(all_times)} orari liberi in totale per {'/'.join(map(str, PARTY_SIZES))} "
-               f"persone, {len(current)} nella fascia {SLOT_FROM}-{SLOT_TO}. "
-               f"Se il totale è 0 per più settimane, l'API potrebbe essere cambiata.",
-               priority=2, tags=("white_check_mark",))
-        log(f"Battito settimanale inviato ({len(all_times)} orari liberi in totale).")
+    # Segnale "sono vivo" a Healthchecks.io, solo se l'API ha restituito almeno un orario libero
+    # (a qualsiasi ora). Se i ping smettono di arrivare per il periodo impostato lì — run non avviati,
+    # token scaduto, API cambiata che risponde vuota — è Healthchecks a mandare l'allarme su ntfy.
+    if HC_PING_URL and all_times:
+        try:
+            urllib.request.urlopen(HC_PING_URL, timeout=10).close()
+        except Exception as e:
+            log(f"Ping a Healthchecks non riuscito: {e}")
 
     return {
         "released_until": ((now - RELEASE_GRACE).date() + timedelta(days=WINDOW_DAYS)).isoformat(),
         "errors": 0,
-        "heartbeat_week": week,
         "slots": {k: sorted(v) for k, v in sorted(current.items())},
     }
 
