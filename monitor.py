@@ -36,7 +36,8 @@ def area_name(name):
 
 
 def fetch(party_size, start, end):
-    """Insieme di slot 'AAAA-MM-GG|HH:MM|AREA' disponibili per quel numero di persone."""
+    """Slot 'AAAA-MM-GG|HH:MM|AREA' nella fascia oraria per quel numero di persone,
+    più tutti gli orari liberi 'AAAA-MM-GG|HH:MM' a qualsiasi ora (per il battito settimanale)."""
     body = json.dumps({
         "DateFrom": f"{start.isoformat()}T00:00:00",
         "DateTo": f"{end.isoformat()}T00:00:00",
@@ -52,15 +53,16 @@ def fetch(party_size, start, end):
     })
     with urllib.request.urlopen(req, timeout=20) as r:
         data = json.load(r)
-    slots = set()
+    slots, all_times = set(), set()
     for d in data["AvailableDates"]:
         areas = {a["Id"]: area_name(a["Name"]) for a in d.get("Areas", [])}
         for t in d["AvailableTimes"]:
+            all_times.add(f'{d["Date"][:10]}|{t["TimeSlot"][:5]}')
             if not SLOT_FROM <= t["TimeSlot"][:5] <= SLOT_TO:
                 continue
             for area_id in t.get("AvailableAreaIds") or [None]:
                 slots.add(f'{d["Date"][:10]}|{t["TimeSlot"][:5]}|{areas.get(area_id, "?")}')
-    return slots
+    return slots, all_times
 
 
 def notify(title, message, priority=4, tags=("pizza",)):
@@ -99,9 +101,11 @@ def check(state):
 
     today = now.date()
     try:
-        current = {}
+        current, all_times = {}, set()
         for ps in PARTY_SIZES:
-            for slot in fetch(ps, today, today + timedelta(days=WINDOW_DAYS + 1)):
+            slots, times = fetch(ps, today, today + timedelta(days=WINDOW_DAYS + 1))
+            all_times |= times
+            for slot in slots:
                 current.setdefault(slot, set()).add(ps)
     except Exception as e:
         state = {**state, "errors": state.get("errors", 0) + 1}
@@ -130,9 +134,21 @@ def check(state):
     else:
         log(f"Nessun tavolo liberato ({len(current)} slot disponibili nella fascia oraria).")
 
+    # Battito settimanale: al primo controllo riuscito della settimana (di norma lunedì alle 8:00).
+    # Se un lunedì non arriva, qualcosa nella catena si è rotto.
+    week = "%d-W%02d" % now.isocalendar()[:2]
+    if state.get("heartbeat_week") != week:
+        notify("Monitor Bob attivo",
+               f"Controllo settimanale: {len(all_times)} orari liberi in totale per {'/'.join(map(str, PARTY_SIZES))} "
+               f"persone, {len(current)} nella fascia {SLOT_FROM}-{SLOT_TO}. "
+               f"Se il totale è 0 per più settimane, l'API potrebbe essere cambiata.",
+               priority=2, tags=("white_check_mark",))
+        log(f"Battito settimanale inviato ({len(all_times)} orari liberi in totale).")
+
     return {
         "released_until": ((now - RELEASE_GRACE).date() + timedelta(days=WINDOW_DAYS)).isoformat(),
         "errors": 0,
+        "heartbeat_week": week,
         "slots": {k: sorted(v) for k, v in sorted(current.items())},
     }
 
