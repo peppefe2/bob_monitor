@@ -1,24 +1,18 @@
 name: Monitor Bob
 
-# Ogni run controlla per circa 2 ore (fuori fascia resta in attesa senza interrogare l'API),
-# salva lo stato e avvia da solo il run successivo: non dipende dallo scheduler di GitHub.
-# AVVIO: una volta "Run workflow" a mano.
-# STOP: Actions -> Monitor Bob -> "..." -> Disable workflow
-#       (annullare il run in corso non basta se ce n'è già uno in coda).
-# Il cron orario è solo un ripiego se la catena si interrompe, nel caso GitHub lo esegua.
+# Un controllo per run (circa 20 secondi). Lo avvia cron-job.org ogni 5 minuti,
+# dalle 8:00 alle 23:55, tramite l'API workflow_dispatch di GitHub.
+# STOP: disattiva il cronjob su cron-job.org (oppure Actions -> Monitor Bob -> "..." -> Disable workflow).
 on:
-  schedule:
-    - cron: "17 * * * *"
   workflow_dispatch:
     inputs:
       test:
-        description: "Invia una notifica di prova all'avvio"
+        description: "Invia una notifica di prova"
         type: boolean
         default: false
 
 permissions:
   contents: write   # commit di state.json
-  actions: write    # avvio del run successivo
 
 concurrency:
   group: monitor-bob
@@ -27,13 +21,12 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 130
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
 
       - name: Controlla disponibilità
-        id: check
-        run: python3 monitor.py --duration 115 --every 2
+        run: python3 monitor.py
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           NTFY_TEST: ${{ inputs.test }}
@@ -44,7 +37,6 @@ jobs:
           ACTIVE_TO: "23:50"
 
       - name: Salva stato (solo se cambiato)
-        if: ${{ !cancelled() }}
         run: |
           if [ -n "$(git status --porcelain state.json)" ]; then
             git config user.name "github-actions[bot]"
@@ -53,12 +45,3 @@ jobs:
             git commit -q -m "stato $(date -u +%FT%TZ)"
             git pull -q --rebase && git push -q
           fi
-
-      - name: Avvia il run successivo
-        if: ${{ !cancelled() }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # se il controllo è andato in errore, aspetta un po' per non girare a vuoto
-          if [ "${{ steps.check.outcome }}" != "success" ]; then sleep 180; fi
-          gh api -X POST "repos/${{ github.repository }}/actions/workflows/monitor.yml/dispatches" -f ref="${{ github.ref_name }}"
