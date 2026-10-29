@@ -29,6 +29,7 @@ jobs:
         run: python3 monitor.py
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          HC_PING_URL: ${{ secrets.HC_PING_URL }}   # ping a Healthchecks.io dopo ogni controllo riuscito
           NTFY_TEST: ${{ inputs.test }}
           PARTY_SIZES: "2,3,4,5"
           SLOT_FROM: "20:30"     # orario del tavolo, estremi inclusi
