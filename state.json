@@ -1,5 +1,9 @@
 {
  "released_until": "2026-11-09",
  "errors": 0,
- "slots": {}
+ "slots": {
+  "2026-11-05|21:00|SALA": [
+   2
+  ]
+ }
 }
