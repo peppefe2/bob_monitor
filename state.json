@@ -1,5 +1,10 @@
 {
  "released_until": "2026-11-12",
  "errors": 0,
- "slots": {}
+ "slots": {
+  "2026-11-07|22:00|SOLO ADULTI": [
+   4,
+   5
+  ]
+ }
 }
